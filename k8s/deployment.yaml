@@ -1,0 +1,128 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: moondream-server
+  namespace: llm
+  labels:
+    app: moondream-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: moondream-server
+  template:
+    metadata:
+      labels:
+        app: moondream-server
+    spec:
+      volumes:
+      - name: huggingface-cache
+        hostPath:
+          path: /data/huggingface-cache
+          type: Directory
+      containers:
+      - name: moondream-server
+        image: friddlecopper/moondream:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 5000
+          name: http
+          protocol: TCP
+        env:
+        - name: TRANSFORMERS_CACHE
+          value: /data/huggingface-cache
+        - name: HF_HOME
+          value: /data/huggingface-cache
+        - name: VLM_AUTH_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: moondream-auth
+              key: username
+        - name: VLM_AUTH_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: moondream-auth
+              key: password
+        - name: VLM_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: moondream-auth
+              key: api_key
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: huggingface
+              key: token
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        volumeMounts:
+        - name: huggingface-cache
+          mountPath: /data/huggingface-cache
+        resources:
+          requests:
+            memory: "12Gi"
+            cpu: "4"
+            nvidia.com/gpu: "1"
+          limits:
+            memory: "24Gi"
+            cpu: "8"
+            nvidia.com/gpu: "1"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 5000
+            httpHeaders:
+            - name: Authorization
+              value: Basic YWRtaW46YWRtaW4=
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 5000
+            httpHeaders:
+            - name: Authorization
+              value: Basic YWRtaW46YWRtaW4=
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: moondream-service
+  namespace: llm
+  labels:
+    app: moondream-server
+spec:
+  selector:
+    app: moondream-server
+  ports:
+  - port: 5000
+    targetPort: 5000
+    protocol: TCP
+    name: http
+  type: ClusterIP
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: moondream-auth
+  namespace: llm
+type: Opaque
+stringData:
+  username: admin
+  password: admin123
+  api_key: ""
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: huggingface
+  namespace: llm
+type: Opaque
+stringData:
+  token: your_huggingface_token_here

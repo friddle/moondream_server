@@ -1,0 +1,91 @@
+version: '3.8'
+
+services:
+  vlm-server:
+    image: friddlecooper/moondream:latest
+    container_name: moondream-vlm-server
+    ports:
+      - "5000:5000"
+    environment:
+      # HTTP Basic Auth (for legacy endpoints /identify, /caption, /)
+      - VLM_AUTH_USERNAME=${VLM_AUTH_USERNAME:-admin}
+      - VLM_AUTH_PASSWORD=${VLM_AUTH_PASSWORD:-admin}
+
+      # API Key Authentication (for standard Moondream API endpoints /v1/caption, /v1/query)
+      # Set this environment variable to enable API key authentication
+      - VLM_API_KEY=${VLM_API_KEY:-}
+
+      # HuggingFace Token (for downloading the Moondream model)
+      - HF_TOKEN=${HF_TOKEN:-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}
+
+      # Python settings
+      - PYTHONUNBUFFERED=1
+
+    # GPU support (requires nvidia-container-toolkit)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+    volumes:
+      # Optional: Mount model cache to persist downloaded models
+      - model-cache:/root/.cache/huggingface
+
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+    restart: unless-stopped
+
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  model-cache:
+    driver: local
+
+# Example usage:
+# 1. Set environment variables in .env file:
+#    VLM_API_KEY=your_api_key_here
+#    HF_TOKEN=your_huggingface_token
+#    VLM_AUTH_USERNAME=admin
+#    VLM_AUTH_PASSWORD=your_password
+#
+# 2. Start the service:
+#    docker-compose up -d
+#
+# 3. Check logs:
+#    docker-compose logs -f
+#
+# 4. Test the API:
+#    # Test v1/caption endpoint (requires X-Moondream-Auth header)
+#    curl -X POST http://localhost:5000/v1/caption \
+#      -H 'Content-Type: application/json' \
+#      -H 'X-Moondream-Auth: your_api_key_here' \
+#      -d '{
+#        "image_url": "data:image/jpeg;base64,...",
+#        "length": "normal"
+#      }'
+#
+#    # Test v1/query endpoint (requires X-Moondream-Auth header)
+#    curl -X POST http://localhost:5000/v1/query \
+#      -H 'Content-Type: application/json' \
+#      -H 'X-Moondream-Auth: your_api_key_here' \
+#      -d '{
+#        "image_url": "data:image/jpeg;base64,...",
+#        "question": "What is in this image?"
+#      }'
+#
+#    # Test legacy /caption endpoint (uses HTTP Basic Auth)
+#    curl -u admin:password -F 'file=@image.jpg' \
+#      http://localhost:5000/caption?length=normal

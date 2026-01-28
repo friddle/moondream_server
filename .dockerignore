@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# Model cache
+.cache/
+huggingface/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test files
+test_*.jpg
+test_*.png
+*.log
+
+# Documentation
+*.md
+!README.md
+!USAGE.md
+
+# Docker
+docker/
+*.sh
+!start.sh
+
+# Temporary files
+*.tmp
+*.bak
+.DS_Store
