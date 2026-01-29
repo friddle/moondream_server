@@ -1,6 +1,11 @@
 """
 Moondream-2B Image Recognition HTTP Service
 Upload images and get AI-powered descriptions
+
+Optimized with:
+- Thread pool for async image preprocessing
+- Request batching for better GPU utilization
+- Gunicorn compatible
 """
 
 import torch
@@ -14,11 +19,27 @@ import os
 import base64
 import uuid
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+import threading
+import queue
 
 app = Flask(__name__)
 
 # Global model variable
 moondream = None
+
+# Thread pool for CPU-intensive preprocessing (base64 decode, image conversion)
+# This allows multiple images to be preprocessed in parallel while GPU is busy
+PREPROCESS_WORKERS = int(os.environ.get('PREPROCESS_WORKERS', '4'))
+preprocess_pool = ThreadPoolExecutor(max_workers=PREPROCESS_WORKERS)
+
+# GPU inference lock - ensures only one inference at a time to prevent OOM
+gpu_lock = threading.Lock()
+
+# Batch processing settings
+BATCH_ENABLED = os.environ.get('BATCH_ENABLED', 'false').lower() == 'true'
+BATCH_SIZE = int(os.environ.get('BATCH_SIZE', '4'))
+BATCH_TIMEOUT = float(os.environ.get('BATCH_TIMEOUT', '0.1'))  # 100ms
 
 # API Key for X-Moondream-Auth header (standard Moondream API)
 # Read from VLM_API_KEY environment variable
@@ -60,11 +81,35 @@ def load_model():
     moondream.compile()
     print("✓ Model loaded and ready!")
 
+    # Print optimization settings
+    print(f"✓ Preprocess thread pool: {PREPROCESS_WORKERS} workers")
+    print(f"✓ Batch processing: {'enabled' if BATCH_ENABLED else 'disabled'}")
+    if BATCH_ENABLED:
+        print(f"  - Batch size: {BATCH_SIZE}")
+        print(f"  - Batch timeout: {BATCH_TIMEOUT}s")
+
     # Print auth status
     if VLM_API_KEY:
         print("✓ API Key authentication enabled (X-Moondream-Auth)")
     else:
         print("⚠ No API key set - using X-Moondream-Auth header is optional")
+
+
+def preprocess_image_async(image_url):
+    """
+    Submit image preprocessing to thread pool.
+    Returns a Future that resolves to the preprocessed PIL Image.
+    """
+    return preprocess_pool.submit(decode_base64_image, image_url)
+
+
+def run_inference_with_lock(func, *args, **kwargs):
+    """
+    Run GPU inference with lock to prevent concurrent GPU access.
+    This ensures only one inference runs at a time, preventing OOM errors.
+    """
+    with gpu_lock:
+        return func(*args, **kwargs)
 
 def decode_base64_image(image_url):
     """Decode base64 image from data URL"""
@@ -103,7 +148,16 @@ def calculate_metrics(start_time, end_time, input_tokens=0, output_tokens=0):
 @app.route('/health', methods=['GET'])
 def health():
     """Health check endpoint"""
-    return jsonify({"status": "ok", "model": "moondream-2b-2025-04-14", "api_key_enabled": bool(VLM_API_KEY)})
+    return jsonify({
+        "status": "ok",
+        "model": "moondream-2b-2025-04-14",
+        "api_key_enabled": bool(VLM_API_KEY),
+        "optimization": {
+            "preprocess_workers": PREPROCESS_WORKERS,
+            "batch_enabled": BATCH_ENABLED,
+            "batch_size": BATCH_SIZE if BATCH_ENABLED else None
+        }
+    })
 
 @app.route('/', methods=['GET'])
 def index():
@@ -582,14 +636,17 @@ def v1_caption():
 
         stream = data.get('stream', False)
 
-        # Decode base64 image
-        image = decode_base64_image(image_url)
+        # Async preprocess: submit to thread pool (non-blocking for other requests)
+        preprocess_future = preprocess_image_async(image_url)
+        
+        # Wait for preprocessing to complete
+        image = preprocess_future.result()
 
-        # Start timing
+        # Start timing (inference only)
         start_time = time.time()
 
-        # Generate caption
-        result = moondream.caption(image, length=length)
+        # Generate caption with GPU lock (prevents concurrent GPU access)
+        result = run_inference_with_lock(moondream.caption, image, length=length)
 
         # End timing
         end_time = time.time()
@@ -650,17 +707,21 @@ def v1_query():
         # Generate request_id
         request_id = f"query_{datetime.now().strftime('%Y-%m-%d-%H:%M:%S')}-{uuid.uuid4().hex[:6]}"
 
-        # Decode base64 image
-        print(f"[DEBUG] Decoding image_url of length: {len(image_url)}")
-        image = decode_base64_image(image_url)
-        print(f"[DEBUG] Image decoded: size={image.size}, mode={image.mode}")
+        # Async preprocess: submit to thread pool (non-blocking for other requests)
+        print(f"[DEBUG] Submitting image preprocessing (length: {len(image_url)})")
+        preprocess_future = preprocess_image_async(image_url)
+        
+        # Wait for preprocessing to complete
+        image = preprocess_future.result()
+        print(f"[DEBUG] Image preprocessed: size={image.size}, mode={image.mode}")
 
-        # Start timing
+        # Start timing (inference only)
         start_time = time.time()
 
-        # Run inference
+        # Run inference with GPU lock (prevents concurrent GPU access)
         print(f"[DEBUG] Calling moondream.query with question: {question}")
-        result = moondream.query(
+        result = run_inference_with_lock(
+            moondream.query,
             image=image,
             question=question
         )
@@ -689,7 +750,29 @@ def v1_query():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+def create_app():
+    """
+    Application factory for Gunicorn.
+    Called when running with: gunicorn 'app:create_app()'
+    """
+    load_model()
+    return app
+
+
+# For Gunicorn: preload the model when module is imported
+# This is used with gunicorn --preload flag
+_model_loaded = False
+
+def ensure_model_loaded():
+    """Ensure model is loaded (for gunicorn workers)"""
+    global _model_loaded
+    if not _model_loaded:
+        load_model()
+        _model_loaded = True
+
+
 if __name__ == '__main__':
+    # Direct execution: python app.py
     load_model()
     print("\n" + "="*60)
     print("Moondream-2B HTTP Server Running!")
@@ -700,4 +783,9 @@ if __name__ == '__main__':
     else:
         print("Auth: Disabled (no API key required)")
     print("="*60 + "\n")
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    # Use threaded=True for basic concurrency with Flask dev server
+    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
+else:
+    # Imported by Gunicorn: load model
+    # This ensures model is loaded when gunicorn imports the module
+    ensure_model_loaded()

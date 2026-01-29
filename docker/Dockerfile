@@ -53,6 +53,17 @@ ENV VLM_AUTH_PASSWORD=${VLM_AUTH_PASSWORD:-admin}
 ENV VLM_API_KEY=${VLM_API_KEY:-}
 ENV HF_TOKEN=${HF_TOKEN:-}
 
+# Optimization settings
+ENV PREPROCESS_WORKERS=4
+ENV BATCH_ENABLED=false
+ENV BATCH_SIZE=4
+ENV BATCH_TIMEOUT=0.1
+
+# Gunicorn settings
+ENV GUNICORN_WORKERS=1
+ENV GUNICORN_THREADS=4
+ENV GUNICORN_TIMEOUT=120
+
 # 暴露端口
 EXPOSE 5000
 
@@ -60,5 +71,8 @@ EXPOSE 5000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD wget -q --spider http://localhost:5000/health || exit 1
 
-# 启动命令
-CMD ["python3", "app.py"]
+# 启动命令 - 使用 Gunicorn with gevent worker
+# - 1 worker (GPU can only handle 1 inference at a time)
+# - gevent for async I/O (handles concurrent connections efficiently)
+# - 120s timeout for large images
+CMD ["sh", "-c", "gunicorn --worker-class gevent --workers ${GUNICORN_WORKERS} --threads ${GUNICORN_THREADS} --timeout ${GUNICORN_TIMEOUT} --bind 0.0.0.0:5000 --access-logfile - --error-logfile - app:app"]
