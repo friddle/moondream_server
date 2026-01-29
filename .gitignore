@@ -40,6 +40,9 @@ env/
 # Environment variables
 .env
 .env.local
+.env.docker-compose
+*.env
+!*.env.example
 
 # Logs
 *.log

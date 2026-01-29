@@ -5,7 +5,6 @@ metadata:
   namespace: llm
   annotations:
     kubernetes.io/ingress.class: nginx
-    cert-manager.io/cluster-issuer: letsencrypt-aliyun
     nginx.ingress.kubernetes.io/ssl-redirect: "false"
     nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
     nginx.ingress.kubernetes.io/proxy-body-size: "0"
@@ -39,4 +38,4 @@ spec:
   - hosts:
     - moondream.sgprivate.code27.co
     - moondream.sgllm.code27.co
-    secretName: moondream-server-tls
+    secretName: code27-wildcard-tls

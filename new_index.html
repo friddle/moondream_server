@@ -31,7 +31,7 @@
         .subtitle {
             text-align: center;
             color: #666;
-            margin-bottom: 30px;
+            margin-bottom: 20px;
             font-size: 14px;
         }
 
@@ -118,7 +118,7 @@
             font-weight: 500;
             margin-bottom: 8px;
         }
-        input[type="text"], select {
+        input[type="text"], select, input[type="password"] {
             width: 100%;
             padding: 12px 15px;
             border: 2px solid #e0e0e0;
@@ -126,7 +126,7 @@
             font-size: 14px;
             transition: border-color 0.3s;
         }
-        input[type="text"]:focus, select:focus {
+        input[type="text"]:focus, select:focus, input[type="password"]:focus {
             outline: none;
             border-color: #667eea;
         }
@@ -213,6 +213,12 @@
         <h1>🌙 Moondream-2B</h1>
         <p class="subtitle">AI 图像识别服务</p>
 
+        <!-- API Key Input -->
+        <div class="input-group">
+            <label for="authToken">API 密钥 (可选)</label>
+            <input type="password" id="authToken" placeholder="输入 X-Moondream-Auth 密钥（如需要）">
+        </div>
+
         <!-- Mode Selector -->
         <div class="mode-selector">
             <button class="mode-btn active" id="promptModeBtn" onclick="switchMode('prompt')">
@@ -268,6 +274,7 @@
         const fileInput = document.getElementById('fileInput');
         const preview = document.getElementById('preview');
         const submitBtn = document.getElementById('submitBtn');
+        const authToken = document.getElementById('authToken');
         const question = document.getElementById('question');
         const captionLength = document.getElementById('captionLength');
         const promptInputGroup = document.getElementById('promptInputGroup');
@@ -346,22 +353,22 @@
             reader.readAsDataURL(file);
         }
 
+        // Convert file to base64
+        function fileToBase64(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => {
+                    // Remove data URL prefix (e.g., "data:image/jpeg;base64,")
+                    const base64 = reader.result.split(',')[1];
+                    resolve(base64);
+                };
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+        }
+
         submitBtn.addEventListener('click', async () => {
             if (!selectedFile) return;
-
-            const formData = new FormData();
-            formData.append('file', selectedFile);
-
-            let endpoint = '';
-            if (currentMode === 'prompt') {
-                endpoint = '/identify';
-                formData.append('question', question.value || '这是什么？');
-                loadingText.textContent = 'AI 正在回答问题，请稍候...';
-            } else {
-                endpoint = '/caption';
-                formData.append('length', captionLength.value);
-                loadingText.textContent = 'AI 正在生成描述，请稍候...';
-            }
 
             loading.style.display = 'block';
             result.style.display = 'none';
@@ -369,11 +376,50 @@
             submitBtn.disabled = true;
 
             try {
+                // Convert image to base64
+                const imageBase64 = await fileToBase64(selectedFile);
+
+                // Determine image type
+                const imageType = selectedFile.type || 'image/jpeg';
+
+                let endpoint = '';
+                let payload = {};
+
+                if (currentMode === 'prompt') {
+                    endpoint = '/v1/query';
+                    payload = {
+                        image_url: `data:${imageType};base64,${imageBase64}`,
+                        question: question.value || '这是什么？'
+                    };
+                    loadingText.textContent = 'AI 正在回答问题，请稍候...';
+                } else {
+                    endpoint = '/v1/caption';
+                    payload = {
+                        image_url: `data:${imageType};base64,${imageBase64}`,
+                        length: captionLength.value,
+                        stream: false
+                    };
+                    loadingText.textContent = 'AI 正在生成描述，请稍候...';
+                }
+
                 const startTime = Date.now();
+
+                // Prepare headers
+                const headers = {
+                    'Content-Type': 'application/json'
+                };
+
+                // Add auth token if provided
+                if (authToken.value.trim()) {
+                    headers['X-Moondream-Auth'] = authToken.value.trim();
+                }
+
                 const response = await fetch(endpoint, {
                     method: 'POST',
-                    body: formData
+                    headers: headers,
+                    body: JSON.stringify(payload)
                 });
+
                 const data = await response.json();
 
                 if (response.ok) {
@@ -384,7 +430,9 @@
                         resultTitle.textContent = '✨ 图片描述';
                         resultContent.textContent = data.caption;
                     }
-                    timeBadge.textContent = `⏱️ 识别时间: ${data.inference_time}`;
+
+                    const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(2);
+                    timeBadge.textContent = `⏱️ 识别时间: ${elapsedTime}s`;
                     result.style.display = 'block';
 
                     // Also log to console
@@ -404,4 +452,3 @@
     </script>
 </body>
 </html>
-    '''
