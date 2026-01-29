@@ -71,8 +71,18 @@ def decode_base64_image(image_url):
     if image_url.startswith('data:image/'):
         # Extract the base64 part after the comma
         header, encoded = image_url.split(',', 1)
-        image_bytes = base64.b64decode(encoded)
-        return Image.open(io.BytesIO(image_bytes))
+        image_bytes = base64.b64decode(encoded, validate=True)
+
+        # Open the image from bytes
+        image = Image.open(io.BytesIO(image_bytes))
+        # Force loading image data to catch errors early
+        image.load()
+
+        # Convert to RGB if necessary (handles RGBA, grayscale, palette, etc.)
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+
+        return image
     else:
         raise ValueError("Invalid image_url format. Expected data URL format: data:image/<type>;base64,<data>")
 
@@ -132,8 +142,25 @@ def index():
         .subtitle {
             text-align: center;
             color: #666;
-            margin-bottom: 30px;
+            margin-bottom: 20px;
             font-size: 14px;
+        }
+
+        /* API Key Input */
+        .input-group {
+            margin-bottom: 20px;
+        }
+        input[type="text"], select, input[type="password"] {
+            width: 100%;
+            padding: 12px 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+        input[type="text"]:focus, select:focus, input[type="password"]:focus {
+            outline: none;
+            border-color: #667eea;
         }
 
         /* Mode Selector */
@@ -207,9 +234,6 @@ def index():
         }
 
         /* Input Group */
-        .input-group {
-            margin-bottom: 20px;
-        }
         .input-group.hidden {
             display: none;
         }
@@ -218,18 +242,6 @@ def index():
             color: #333;
             font-weight: 500;
             margin-bottom: 8px;
-        }
-        input[type="text"], select {
-            width: 100%;
-            padding: 12px 15px;
-            border: 2px solid #e0e0e0;
-            border-radius: 10px;
-            font-size: 14px;
-            transition: border-color 0.3s;
-        }
-        input[type="text"]:focus, select:focus {
-            outline: none;
-            border-color: #667eea;
         }
 
         button.submit-btn {
@@ -314,6 +326,12 @@ def index():
         <h1>🌙 Moondream-2B</h1>
         <p class="subtitle">AI 图像识别服务</p>
 
+        <!-- API Key Input -->
+        <div class="input-group">
+            <label for="authToken">API 密钥 (可选)</label>
+            <input type="password" id="authToken" placeholder="输入 X-Moondream-Auth 密钥（如需要）">
+        </div>
+
         <!-- Mode Selector -->
         <div class="mode-selector">
             <button class="mode-btn active" id="promptModeBtn" onclick="switchMode('prompt')">
@@ -369,6 +387,7 @@ def index():
         const fileInput = document.getElementById('fileInput');
         const preview = document.getElementById('preview');
         const submitBtn = document.getElementById('submitBtn');
+        const authToken = document.getElementById('authToken');
         const question = document.getElementById('question');
         const captionLength = document.getElementById('captionLength');
         const promptInputGroup = document.getElementById('promptInputGroup');
@@ -450,57 +469,85 @@ def index():
         submitBtn.addEventListener('click', async () => {
             if (!selectedFile) return;
 
-            const formData = new FormData();
-            formData.append('file', selectedFile);
+            // Convert file to base64
+            const reader = new FileReader();
+            reader.onload = async (e) => {
+                const base64 = e.target.result.split(',')[1];
 
-            let endpoint = '';
-            if (currentMode === 'prompt') {
-                endpoint = '/identify';
-                formData.append('question', question.value || '这是什么？');
-                loadingText.textContent = 'AI 正在回答问题，请稍候...';
-            } else {
-                endpoint = '/caption';
-                formData.append('length', captionLength.value);
-                loadingText.textContent = 'AI 正在生成描述，请稍候...';
-            }
+                let endpoint = '';
+                let requestBody = {};
 
-            loading.style.display = 'block';
-            result.style.display = 'none';
-            error.style.display = 'none';
-            submitBtn.disabled = true;
-
-            try {
-                const startTime = Date.now();
-                const response = await fetch(endpoint, {
-                    method: 'POST',
-                    body: formData
-                });
-                const data = await response.json();
-
-                if (response.ok) {
-                    if (currentMode === 'prompt') {
-                        resultTitle.textContent = '✨ 回答';
-                        resultContent.textContent = data.answer;
-                    } else {
-                        resultTitle.textContent = '✨ 图片描述';
-                        resultContent.textContent = data.caption;
-                    }
-                    timeBadge.textContent = `⏱️ 识别时间: ${data.inference_time}`;
-                    result.style.display = 'block';
-
-                    // Also log to console
-                    console.log('识别结果:', data);
+                if (currentMode === 'prompt') {
+                    endpoint = '/v1/query';
+                    requestBody = {
+                        image_url: `data:image/jpeg;base64,${base64}`,
+                        question: question.value || '这是什么？'
+                    };
+                    loadingText.textContent = 'AI 正在回答问题，请稍候...';
                 } else {
-                    error.textContent = '❌ ' + (data.error || '识别失败');
-                    error.style.display = 'block';
+                    endpoint = '/v1/caption';
+                    requestBody = {
+                        image_url: `data:image/jpeg;base64,${base64}`,
+                        length: captionLength.value,
+                        stream: false
+                    };
+                    loadingText.textContent = 'AI 正在生成描述，请稍候...';
                 }
-            } catch (err) {
-                error.textContent = '❌ 网络错误: ' + err.message;
-                error.style.display = 'block';
-            } finally {
-                loading.style.display = 'none';
-                submitBtn.disabled = false;
-            }
+
+                loading.style.display = 'block';
+                result.style.display = 'none';
+                error.style.display = 'none';
+                submitBtn.disabled = true;
+
+                try {
+                    const startTime = Date.now();
+
+                    // Prepare headers
+                    const headers = {
+                        'Content-Type': 'application/json'
+                    };
+
+                    // Add auth token if provided
+                    if (authToken.value.trim()) {
+                        headers['X-Moondream-Auth'] = authToken.value.trim();
+                    }
+
+                    const response = await fetch(endpoint, {
+                        method: 'POST',
+                        headers: headers,
+                        body: JSON.stringify(requestBody)
+                    });
+                    const data = await response.json();
+
+                    if (response.ok) {
+                        if (currentMode === 'prompt') {
+                            resultTitle.textContent = '✨ 回答';
+                            resultContent.textContent = data.answer;
+                            timeBadge.textContent = `⏱️ 识别时间: ${((Date.now() - startTime) / 1000).toFixed(2)}s`;
+                        } else {
+                            resultTitle.textContent = '✨ 图片描述';
+                            resultContent.textContent = data.caption;
+                            if (data.metrics) {
+                                timeBadge.textContent = `⏱️ 处理时间: ${(data.metrics.decode_time_ms / 1000).toFixed(2)}s`;
+                            }
+                        }
+                        result.style.display = 'block';
+
+                        // Also log to console
+                        console.log('识别结果:', data);
+                    } else {
+                        error.textContent = '❌ ' + (data.error || '识别失败');
+                        error.style.display = 'block';
+                    }
+                } catch (err) {
+                    error.textContent = '❌ 网络错误: ' + err.message;
+                    error.style.display = 'block';
+                } finally {
+                    loading.style.display = 'none';
+                    submitBtn.disabled = false;
+                }
+            };
+            reader.readAsDataURL(selectedFile);
         });
     </script>
 </body>
@@ -508,59 +555,6 @@ def index():
     '''
 
 
-@app.route('/caption', methods=['POST'])
-@api_key_required
-def caption():
-    """
-    Caption endpoint - Generate natural language description of image
-
-    Expects:
-    - file: image file (multipart/form-data)
-    - length: caption length - "short", "normal", or "long" (default: "normal")
-    """
-    if 'file' not in request.files:
-        return jsonify({"error": "No file provided"}), 400
-
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({"error": "No file selected"}), 400
-
-    length = request.form.get('length', 'normal')
-    if length not in ['short', 'normal', 'long']:
-        length = 'normal'
-
-    try:
-        # Read and load image
-        image_bytes = file.read()
-        image = Image.open(io.BytesIO(image_bytes))
-
-        # Start timing
-        start_time = time.time()
-
-        # Generate caption
-        result = moondream.caption(image, length=length)
-
-        # End timing
-        end_time = time.time()
-        inference_time = end_time - start_time
-
-        response = {
-            "caption": result["caption"],
-            "length": length,
-            "inference_time": f"{inference_time:.3f}s"
-        }
-
-        # Print timing to console
-        print(f"\n{'='*60}")
-        print(f"Inference Time: {inference_time:.3f} seconds")
-        print(f"Caption Length: {length}")
-        print(f"Caption: {result['caption']}")
-        print(f"{'='*60}\n")
-
-        return jsonify(response)
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
 
 @app.route('/v1/caption', methods=['POST'])
 @api_key_required
@@ -629,60 +623,6 @@ def v1_caption():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/identify', methods=['POST'])
-@api_key_required
-def identify():
-    """
-    Identify/upload image endpoint
-
-    Expects:
-    - file: image file (multipart/form-data)
-    - question: optional question about the image (default: "What's in this image?")
-    """
-    if 'file' not in request.files:
-        return jsonify({"error": "No file provided"}), 400
-
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({"error": "No file selected"}), 400
-
-    question = request.form.get('question', "What's in this image?")
-
-    try:
-        # Read and load image
-        image_bytes = file.read()
-        image = Image.open(io.BytesIO(image_bytes))
-
-        # Start timing
-        start_time = time.time()
-
-        # Run inference (moondream-2b doesn't support 'reasoning' parameter)
-        result = moondream.query(
-            image=image,
-            question=question
-        )
-
-        # End timing
-        end_time = time.time()
-        inference_time = end_time - start_time
-
-        response = {
-            "question": question,
-            "answer": result["answer"],
-            "inference_time": f"{inference_time:.3f}s"
-        }
-
-        # Print timing to console
-        print(f"\n{'='*60}")
-        print(f"Inference Time: {inference_time:.3f} seconds")
-        print(f"Question: {question}")
-        print(f"Answer: {result['answer']}")
-        print(f"{'='*60}\n")
-
-        return jsonify(response)
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
 
 @app.route('/v1/query', methods=['POST'])
 @api_key_required
@@ -711,12 +651,15 @@ def v1_query():
         request_id = f"query_{datetime.now().strftime('%Y-%m-%d-%H:%M:%S')}-{uuid.uuid4().hex[:6]}"
 
         # Decode base64 image
+        print(f"[DEBUG] Decoding image_url of length: {len(image_url)}")
         image = decode_base64_image(image_url)
+        print(f"[DEBUG] Image decoded: size={image.size}, mode={image.mode}")
 
         # Start timing
         start_time = time.time()
 
         # Run inference
+        print(f"[DEBUG] Calling moondream.query with question: {question}")
         result = moondream.query(
             image=image,
             question=question
